@@ -17,23 +17,10 @@ import mlflow.pytorch
 
 ### Configure MLFlow
 
-# Note: all these configurations can be set as environment variables, instead of hard-coding
+# Note: many configurations can be set as environment variables, instead of hard-coding
 # We will pass MLFLOW_TRACKING_URI as an environment variable, but if we hadn't, we could do:
-# mlflow.set_tracking_uri("http://129.114.109.13:8000/") 
-mlflow.set_experiment("food11-classifier-amd")
-mlflow.config.enable_async_logging()
-mlflow.enable_system_metrics_logging() # automatically log GPU and CPU metrics
-# Note: to automatically log AMD GPU metrics, you need to have installed pyrsmi
-# Note: to automatically log NVIDIA GPU metrics, you need to have installed pynvml
-
-# Let's get the output of rocm-info or nvidia-smi as a string...
-gpu_info = next(
-    (subprocess.run(cmd, capture_output=True, text=True).stdout for cmd in ["nvidia-smi", "rocm-smi"] if subprocess.run(f"command -v {cmd}", shell=True, capture_output=True).returncode == 0),
-    "No GPU found."
-)
-# ... and send it to MLFlow as a text file
-mlflow.log_text(gpu_info, "gpu-info.txt")
-
+# mlflow.set_tracking_uri("http://A.B.C.D:8000/") 
+mlflow.set_experiment("food11-classifier")
 
 ### Configure the training job 
 # All hyperparameters will be set here, in one convenient place
@@ -178,7 +165,19 @@ try:
 except:
     pass
 finally:
-    mlflow.start_run() # Start MLFlow run
+    mlflow.start_run(log_system_metrics=True) # Start MLFlow run
+    # automatically log GPU and CPU metrics
+    # Note: to automatically log AMD GPU metrics, you need to have installed pyrsmi
+    # Note: to automatically log NVIDIA GPU metrics, you need to have installed pynvml
+
+# Let's get the output of rocm-info or nvidia-smi as a string...
+gpu_info = next(
+    (subprocess.run(cmd, capture_output=True, text=True).stdout for cmd in ["nvidia-smi", "rocm-smi"] if subprocess.run(f"command -v {cmd}", shell=True, capture_output=True).returncode == 0),
+    "No GPU found."
+)
+# ... and send it to MLFlow as a text file
+mlflow.log_text(gpu_info, "gpu-info.txt")
+
 
 # Log hyperparameters - the things that we *set* in our experiment configuration
 mlflow.log_params(config)
@@ -265,5 +264,11 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
 ### Evaluate on test set
 test_loss, test_acc = validate(food11_model, test_loader, criterion, device)
 print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
+
+# Log test metrics to MLFlow
+mlflow.log_metrics(
+    {"test_loss": test_loss,
+    "test_accuracy": test_acc
+    })
 
 mlflow.end_run()
