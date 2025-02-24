@@ -110,8 +110,8 @@ class LightningFood11Model(pl.LightningModule):
         acc = (outputs.argmax(dim=1) == labels).float().mean()
         # update loss and accuracy in progress bar every epoch
         self.log('train_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
-        self.log('train_acc', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
-        return {"loss": loss, "train_acc": acc}
+        self.log('train_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        return {"loss": loss, "train_accuracy": acc}
         
     def validation_step(self, batch, batch_idx):
         inputs, labels = batch
@@ -121,8 +121,8 @@ class LightningFood11Model(pl.LightningModule):
         # need to set val_loss so that callbacks can use it
         # also update loss and accuracy in progress bar every epoch
         self.log('val_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
-        self.log('val_acc', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
-        return {"val_loss": loss, "val_acc": acc}
+        self.log('val_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        return {"val_loss": loss, "val_accuracy": acc}
 
     def test_step(self, batch, batch_idx):
         inputs, labels = batch
@@ -130,7 +130,7 @@ class LightningFood11Model(pl.LightningModule):
         loss = self.criterion(outputs, labels)
         acc = (outputs.argmax(dim=1) == labels).float().mean()
         self.log('test_loss', loss)
-        self.log('test_acc', acc)
+        self.log('test_accuracy', acc)
         return loss
 
     def configure_optimizers(self):
