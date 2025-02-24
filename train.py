@@ -105,7 +105,7 @@ def train(model, dataloader, criterion, optimizer, device):
         correct += predicted.eq(labels).sum().item()
 
     epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * correct / total
+    epoch_acc = correct / total
 
     return epoch_loss, epoch_acc
 
@@ -129,7 +129,7 @@ def validate(model, dataloader, criterion, device):
             correct += predicted.eq(labels).sum().item()
 
     epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * correct / total
+    epoch_acc = correct / total
 
     return epoch_loss, epoch_acc
 
