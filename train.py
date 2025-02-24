@@ -68,8 +68,8 @@ train_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'traini
 val_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'validation'), transform=val_test_transform)
 test_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'evaluation'), transform=val_test_transform)
 
-train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=8)
-val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=8)
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=16)
+val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=16)
 test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
 
