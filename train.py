@@ -1,25 +1,29 @@
 import numpy as np
 import os
 import subprocess
-import time
-from PIL import Image
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, models
-import torchvision.transforms as transforms
+from torchvision import datasets, models, transforms
+
+### New imports for Lightning
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
+torch.set_float32_matmul_precision('medium')
 
 ### Configure the training job 
 # All hyperparameters will be set here, in one convenient place
+# This part is the same as the "vanilla" Pytorch version
 config = {
     "initial_epochs": 5,
     "total_epochs": 20,
     "patience": 5,
     "batch_size": 32,
     "lr": 1e-4,
-    "fine_tune_lr": 1e-5,
+    "fine_tune_lr": 1e-6,
     "model_architecture": "MobileNetV2",
     "dropout_probability": 0.5,
     "random_horizontal_flip": 0.5,
@@ -31,9 +35,9 @@ config = {
 }
 
 ### Prepare data loaders
+# This part is the same as the "vanilla" Pytorch version
 
 # Get data directory from environment variable, if set
-# otherwise, assume data is in a directory named "Food-11"
 food_11_data_dir = os.getenv("FOOD11_DATA_DIR", "Food-11")
 
 # Define transforms for training data augmentation
@@ -59,150 +63,122 @@ val_test_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Create data loaders
+# Load datasets
 train_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'training'), transform=train_transform)
 val_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'validation'), transform=val_test_transform)
 test_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'evaluation'), transform=val_test_transform)
 
-train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=8)
+val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=8)
 test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
+
 ### Define training and validation/test functions
-# This is Pytorch boilerplate
-
-# training function - one epoch
-def train(model, dataloader, criterion, optimizer, device):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    for inputs, labels in dataloader:
-        inputs, labels = inputs.to(device), labels.to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-        _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
-
-    epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * correct / total
-
-    return epoch_loss, epoch_acc
-
-# validate function - one epoch
-def validate(model, dataloader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for inputs, labels in dataloader:
-            inputs, labels = inputs.to(device), labels.to(device)
-
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-
-    epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * correct / total
-
-    return epoch_loss, epoch_acc
-
 ### Define the model
 
+# We create a class LightningFood11Model that inherits the Pytorch Lightning LightningModule
+# The Pytorch "boilerplate" has moved inside it:
+#  - the model defintion is now inside init
+#  - we are going to use Lightning's convenient BackboneFinetuning callback, so we also define the part of the model that is the backbone
+#  - the forward pass from the train and validate functions are now inside the forward method
+#  - the backward pass from the train and validate functions are now inside the training_step, validation_step, and test_step methods
+#  - the optimizer configuration is now inside configure_optimizers
 
-# Define model
-food11_model = models.mobilenet_v2(weights='MobileNet_V2_Weights.DEFAULT')
-num_ftrs = food11_model.last_channel
-food11_model.classifier = nn.Sequential(
-    nn.Dropout(config["dropout_probability"]),
-    nn.Linear(num_ftrs, 11)
+class LightningFood11Model(pl.LightningModule):
+    def __init__(self):
+        super().__init__()
+        self.model = models.mobilenet_v2(weights='MobileNet_V2_Weights.DEFAULT')
+        num_ftrs = self.model.last_channel
+        self.model.classifier = nn.Sequential(
+            nn.Dropout(config["dropout_probability"]),
+            nn.Linear(num_ftrs, 11)
+        )
+        self.criterion = nn.CrossEntropyLoss()
+
+    @property
+    def backbone(self):
+        """Expose the backbone for BackboneFinetuning callback."""
+        return self.model.features
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx):
+        inputs, labels = batch
+        outputs = self(inputs)
+        loss = self.criterion(outputs, labels)
+        acc = (outputs.argmax(dim=1) == labels).float().mean()
+        # update loss and accuracy in progress bar every epoch
+        self.log('train_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        self.log('train_acc', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        return {"loss": loss, "train_acc": acc}
+        
+    def validation_step(self, batch, batch_idx):
+        inputs, labels = batch
+        outputs = self(inputs)
+        loss = self.criterion(outputs, labels)
+        acc = (outputs.argmax(dim=1) == labels).float().mean()
+        # need to set val_loss so that callbacks can use it
+        # also update loss and accuracy in progress bar every epoch
+        self.log('val_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        self.log('val_acc', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
+        return {"val_loss": loss, "val_acc": acc}
+
+    def test_step(self, batch, batch_idx):
+        inputs, labels = batch
+        outputs = self(inputs)
+        loss = self.criterion(outputs, labels)
+        acc = (outputs.argmax(dim=1) == labels).float().mean()
+        self.log('test_loss', loss)
+        self.log('test_acc', acc)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.model.classifier.parameters(), lr=config["lr"])
+        return optimizer
+
+### Lightning callbacks
+# Many of the things we hand-coded in Pytorch are available "out of the box" in Pytorch Lightning
+# - saving model when vaidation loss improves: use ModelCheckpoint
+# - early stopping: use EarlyStopping
+# - un-freeze backbone/base model after a few epochs, and continue training with a small learning rate: BackboneFinetuning
+
+checkpoint_callback = ModelCheckpoint(
+    dirpath="checkpoints/",  # where to save the model
+    filename="food11",  # model name
+    monitor="val_loss",  # watch validation loss
+    mode="min",  # save the model with the lowest validation loss
+    save_top_k=1  # keep only the best model
 )
 
-# Move to GPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-food11_model = food11_model.to(device)
+early_stopping_callback = EarlyStopping(
+    monitor="val_loss",
+    patience=config["patience"],
+    mode="min"
+)
 
-# Initial training: only the classification head, freeze the backbone/base model
-for param in food11_model.features.parameters():
-    param.requires_grad = False
+backbone_finetuning_callback = BackboneFinetuning(
+    unfreeze_backbone_at_epoch=config["initial_epochs"],
+    backbone_initial_lr = config["fine_tune_lr"],  # Sets initial learning rate for finetuning
+    should_align=True
+)
 
-trainable_params  = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
 
-# Define loss and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(food11_model.classifier.parameters(), lr=config["lr"])
+### Training loop 
+# The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
+# it also includes baked-in support for distributed training across GPUs
+# we set devices="auto" and let it figure out by itself how many GPUs are available, and how to use them
 
-### Training loop for initial training
+lightning_food11_model = LightningFood11Model()
+    
+trainer = Trainer(
+    max_epochs=config["total_epochs"],
+    accelerator="gpu",
+    devices="auto",
+    callbacks=[checkpoint_callback, early_stopping_callback, backbone_finetuning_callback]
+)
 
-best_val_loss = float('inf')
-
-# train new classification head on pre-trained model for a few epochs
-for epoch in range(config["initial_epochs"]):
-    epoch_start_time = time.time()
-    train_loss, train_acc = train(food11_model, train_loader, criterion, optimizer, device)
-    val_loss, val_acc = validate(food11_model, val_loader, criterion, device)
-    epoch_time = time.time() - epoch_start_time
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s")
-
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(food11_model, "food11.pth")
-        print("  Validation loss improved. Model saved.")
-
-### Un-freeze backbone/base model and keep training with smaller learning rate
-
-# unfreeze to fine-tune the entire model
-for param in food11_model.features.parameters():
-    param.requires_grad = True
-
-trainable_params  = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
-
-# optimizer for the entire model with a smaller learning rate for fine-tuning
-optimizer = optim.Adam(food11_model.parameters(), lr=config["fine_tune_lr"])
-
-patience_counter = 0
-
-# Fine-tune entire model for the remaining epochs
-for epoch in range(config["initial_epochs"], config["total_epochs"]):
-
-    epoch_start_time = time.time()
-    train_loss, train_acc = train(food11_model, train_loader, criterion, optimizer, device)
-    val_loss, val_acc = validate(food11_model, val_loader, criterion, device)
-    epoch_time = time.time() - epoch_start_time
-
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s")
-
-    # Check for improvement in validation loss
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        patience_counter = 0
-        torch.save(food11_model, "food11.pth")
-        print("  Validation loss improved. Model saved.")
-
-    else:
-        patience_counter += 1
-        print(f"  No improvement in validation loss. Patience counter: {patience_counter}")
-
-    if patience_counter >= config["patience"]:
-        print("  Early stopping triggered.")
-        break
-
+trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 ### Evaluate on test set
-test_loss, test_acc = validate(food11_model, test_loader, criterion, device)
-print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
+trainer.test(lightning_food11_model, dataloaders=test_loader)
