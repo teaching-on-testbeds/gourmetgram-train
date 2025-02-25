@@ -9,9 +9,9 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
 ### New imports for Lightning
-import pytorch_lightning as pl
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
+import lightning as L
+from lightning import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
 torch.set_float32_matmul_precision('medium')
 
 ### Configure the training job 
@@ -84,7 +84,7 @@ test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=
 #  - the backward pass from the train and validate functions are now inside the training_step, validation_step, and test_step methods
 #  - the optimizer configuration is now inside configure_optimizers
 
-class LightningFood11Model(pl.LightningModule):
+class LightningFood11Model(L.LightningModule):
     def __init__(self):
         super().__init__()
         self.model = models.mobilenet_v2(weights='MobileNet_V2_Weights.DEFAULT')
