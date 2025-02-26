@@ -24,6 +24,10 @@ from ray.train import FailureConfig
 from ray.train.torch import TorchTrainer
 from ray.train.lightning import RayTrainReportCallback
 
+## New imports for Ray Tune
+from ray import tune
+from ray.tune.schedulers import ASHAScheduler
+
 
 ### Configure the training job 
 # All hyperparameters will be set here, in one convenient place
@@ -32,11 +36,11 @@ config = {
     "initial_epochs": 5,
     "total_epochs": 20,
     "patience": 5,
-    "batch_size": 32,
+    "batch_size": tune.choice([32, 64]),
     "lr": 1e-4,
     "fine_tune_lr": 1e-6,
     "model_architecture": "MobileNetV2",
-    "dropout_probability": 0.5,
+    "dropout_probability": tune.uniform(0.1, 0.8),
     "random_horizontal_flip": 0.5,
     "random_rotation": 15,
     "color_jitter_brightness": 0.2,
@@ -193,8 +197,24 @@ def train_func(config):
 
 ### New for Ray Train
 run_config = RunConfig(storage_path="s3://ray", failure_config=FailureConfig(max_failures=2))
-scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
+scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 0.5, "CPU": 4})
 trainer = TorchTrainer(
-    train_func, scaling_config=scaling_config, run_config=run_config, train_loop_config=config
+    train_func, scaling_config=scaling_config, run_config=run_config
 )
-result = trainer.fit()
+
+### New for Ray Tune
+def tune_asha(num_samples):
+    scheduler = ASHAScheduler(max_t=config["total_epochs"], grace_period=1, reduction_factor=2)
+    tuner = tune.Tuner(
+        trainer,
+        param_space={"train_loop_config": config},
+        tune_config=tune.TuneConfig(
+            metric="val_accuracy",
+            mode="max",
+            num_samples=num_samples,
+            scheduler=scheduler,
+        ),
+    )
+    return tuner.fit()
+
+results = tune_asha(num_samples=16)
