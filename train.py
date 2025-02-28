@@ -20,7 +20,6 @@ import ray.train.torch
 import ray.train.lightning
 from ray.train import ScalingConfig
 from ray.train import RunConfig
-from ray.train import FailureConfig 
 from ray.train.torch import TorchTrainer
 from ray.train.lightning import RayTrainReportCallback
 
@@ -190,13 +189,16 @@ def train_func(config):
         callbacks=[early_stopping_callback, backbone_finetuning_callback, ray.train.lightning.RayTrainReportCallback()]
     )
 
+    # Another Ray thing - prepare trainer for distributed training
+    trainer = ray.train.lightning.prepare_trainer(trainer)
+
     trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     ### Evaluate on test set
     trainer.test(lightning_food11_model, dataloaders=test_loader)
 
 ### New for Ray Train
-run_config = RunConfig(storage_path="s3://ray", failure_config=FailureConfig(max_failures=2))
+run_config = RunConfig(storage_path="s3://ray")
 scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 0.5, "CPU": 4})
 trainer = TorchTrainer(
     train_func, scaling_config=scaling_config, run_config=run_config
