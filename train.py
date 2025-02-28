@@ -194,7 +194,7 @@ def train_func(config):
     trainer.test(lightning_food11_model, dataloaders=test_loader)
 
 ### New for Ray Train
-run_config = RunConfig(storage_path="s3://ray", failure_config=FailureConfig(max_failures=2))
+run_config = RunConfig(storage_path="s3://ray")
 scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
 trainer = TorchTrainer(
     train_func, scaling_config=scaling_config, run_config=run_config, train_loop_config=config
