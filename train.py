@@ -20,8 +20,10 @@ import ray.train.torch
 import ray.train.lightning
 from ray.train import ScalingConfig
 from ray.train import RunConfig
+from ray.train import FailureConfig 
 from ray.train.torch import TorchTrainer
 from ray.train.lightning import RayTrainReportCallback
+from ray import train
 
 
 ### Configure the training job 
@@ -188,12 +190,21 @@ def train_func(config):
     # Another Ray thing - prepare trainer for distributed training
     trainer = ray.train.lightning.prepare_trainer(trainer)
 
-    trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    ## For Ray Train fault tolerance with FailureConfig
+    # Recover from checkpoint, if we are restoring after failure
+    checkpoint = train.get_checkpoint()
+    if checkpoint:
+        with checkpoint.as_directory() as ckpt_dir:
+            ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
+            trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)
+    else:
+            trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     ### Evaluate on test set
     trainer.test(lightning_food11_model, dataloaders=test_loader)
 
 ### New for Ray Train
+# now with FailureConfig
 run_config = RunConfig(storage_path="s3://ray", failure_config=FailureConfig(max_failures=2))
 scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
 trainer = TorchTrainer(
