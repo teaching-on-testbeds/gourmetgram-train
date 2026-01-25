@@ -19,10 +19,10 @@ import mlflow.pytorch
 
 # Note: many configurations can be set as environment variables, instead of hard-coding
 # We will pass MLFLOW_TRACKING_URI as an environment variable, but if we hadn't, we could do:
-# mlflow.set_tracking_uri("http://A.B.C.D:8000/") 
+# mlflow.set_tracking_uri("http://A.B.C.D:8000/")
 mlflow.set_experiment("food11-classifier")
 
-### Configure the training job 
+### Configure the training job
 # All hyperparameters will be set here, in one convenient place
 config = {
     "initial_epochs": 5,
@@ -80,9 +80,7 @@ val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=Fa
 test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
 ### Define training and validation/test functions
-# This is Pytorch boilerplate
 
-# training function - one epoch
 def train(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
@@ -109,7 +107,7 @@ def train(model, dataloader, criterion, optimizer, device):
 
     return epoch_loss, epoch_acc
 
-# validate function - one epoch
+
 def validate(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
@@ -135,8 +133,6 @@ def validate(model, dataloader, criterion, device):
 
 ### Define the model
 
-
-# Define model
 food11_model = models.mobilenet_v2(weights='MobileNet_V2_Weights.DEFAULT')
 num_ftrs = food11_model.last_channel
 food11_model.classifier = nn.Sequential(
@@ -152,7 +148,7 @@ food11_model = food11_model.to(device)
 for param in food11_model.features.parameters():
     param.requires_grad = False
 
-trainable_params  = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
+trainable_params = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
 
 # Define loss and optimizer
 criterion = nn.CrossEntropyLoss()
@@ -160,27 +156,32 @@ optimizer = optim.Adam(food11_model.classifier.parameters(), lr=config["lr"])
 
 
 ### Before we start training - start an MLFlow run
-try: 
-    mlflow.end_run() # end pre-existing run, if there was one
-except:
+try:
+    mlflow.end_run()
+except Exception:
     pass
 finally:
-    mlflow.start_run(log_system_metrics=True) # Start MLFlow run
-    # automatically log GPU and CPU metrics
-    # Note: to automatically log AMD GPU metrics, you need to have installed pyrsmi
-    # Note: to automatically log NVIDIA GPU metrics, you need to have installed pynvml
+    mlflow.start_run(log_system_metrics=True)
 
 # Let's get the output of rocm-info or nvidia-smi as a string...
 gpu_info = next(
-    (subprocess.run(cmd, capture_output=True, text=True).stdout for cmd in ["nvidia-smi", "rocm-smi"] if subprocess.run(f"command -v {cmd}", shell=True, capture_output=True).returncode == 0),
+    (
+        subprocess.run(cmd, capture_output=True, text=True).stdout
+        for cmd in ["nvidia-smi", "rocm-smi"]
+        if subprocess.run(f"command -v {cmd}", shell=True, capture_output=True).returncode == 0
+    ),
     "No GPU found."
 )
+
 # ... and send it to MLFlow as a text file
 mlflow.log_text(gpu_info, "gpu-info.txt")
 
-
-# Log hyperparameters - the things that we *set* in our experiment configuration
+# Log hyperparameters
 mlflow.log_params(config)
+
+# Helpful metadata: document how the model artifact is stored
+mlflow.log_param("model_artifact", "model/food11.pth (state_dict)")
+
 
 ### Training loop for initial training
 
@@ -189,35 +190,43 @@ best_val_loss = float('inf')
 # train new classification head on pre-trained model for a few epochs
 for epoch in range(config["initial_epochs"]):
     epoch_start_time = time.time()
+
     train_loss, train_acc = train(food11_model, train_loader, criterion, optimizer, device)
     val_loss, val_acc = validate(food11_model, val_loader, criterion, device)
+
     epoch_time = time.time() - epoch_start_time
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s")
+    print(
+        f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, "
+        f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s"
+    )
 
-    # Log metrics - the things we *measure* - to MLFlow
+    # Log metrics
     mlflow.log_metrics(
-        {"epoch_time": epoch_time,
-         "train_loss": train_loss,
-         "train_accuracy": train_acc,
-         "val_loss": val_loss,
-         "val_accuracy": val_acc,
-         "trainable_params": trainable_params,
-         }, step=epoch)
+        {
+            "epoch_time": epoch_time,
+            "train_loss": train_loss,
+            "train_accuracy": train_acc,
+            "val_loss": val_loss,
+            "val_accuracy": val_acc,
+            "trainable_params": trainable_params,
+        },
+        step=epoch
+    )
 
+    # Save best weights (state_dict only)
     if val_loss < best_val_loss:
         best_val_loss = val_loss
-        torch.save(food11_model, "food11.pth")
-        print("  Validation loss improved. Model saved.")
+        torch.save(food11_model.state_dict(), "food11.pth")
+        print("  Validation loss improved. Model state_dict saved (food11.pth).")
+
 
 ### Un-freeze backbone/base model and keep training with smaller learning rate
 
-# unfreeze to fine-tune the entire model
 for param in food11_model.features.parameters():
     param.requires_grad = True
 
-trainable_params  = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
+trainable_params = sum(p.numel() for p in food11_model.parameters() if p.requires_grad)
 
-# optimizer for the entire model with a smaller learning rate for fine-tuning
 optimizer = optim.Adam(food11_model.parameters(), lr=config["fine_tune_lr"])
 
 patience_counter = 0
@@ -226,31 +235,41 @@ patience_counter = 0
 for epoch in range(config["initial_epochs"], config["total_epochs"]):
 
     epoch_start_time = time.time()
+
     train_loss, train_acc = train(food11_model, train_loader, criterion, optimizer, device)
     val_loss, val_acc = validate(food11_model, val_loader, criterion, device)
+
     epoch_time = time.time() - epoch_start_time
 
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s")
+    print(
+        f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, "
+        f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.4f}, Time: {epoch_time:.2f}s"
+    )
 
-    # Log metrics - the things we *measure* - to MLFlow
     mlflow.log_metrics(
-        {"epoch_time": epoch_time,
-         "train_loss": train_loss,
-         "train_accuracy": train_acc,
-         "val_loss": val_loss,
-         "val_accuracy": val_acc,
-         "trainable_params": trainable_params,
-         }, step=epoch)
+        {
+            "epoch_time": epoch_time,
+            "train_loss": train_loss,
+            "train_accuracy": train_acc,
+            "val_loss": val_loss,
+            "val_accuracy": val_acc,
+            "trainable_params": trainable_params,
+        },
+        step=epoch
+    )
 
     # Check for improvement in validation loss
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         patience_counter = 0
-        torch.save(food11_model, "food11.pth")
-        print("  Validation loss improved. Model saved.")
 
-        # Save the best model as an artifact in MLFlow
-        mlflow.pytorch.log_model(food11_model, "food11")
+        # Save state_dict only
+        torch.save(food11_model.state_dict(), "food11.pth")
+        print("  Validation loss improved. Model state_dict saved (food11.pth).")
+
+        # Log the saved state_dict file as an MLflow artifact (state_dict only)
+        mlflow.log_artifact("food11.pth", artifact_path="model")
+
     else:
         patience_counter += 1
         print(f"  No improvement in validation loss. Patience counter: {patience_counter}")
@@ -267,8 +286,10 @@ print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
 
 # Log test metrics to MLFlow
 mlflow.log_metrics(
-    {"test_loss": test_loss,
-    "test_accuracy": test_acc
-    })
+    {
+        "test_loss": test_loss,
+        "test_accuracy": test_acc
+    }
+)
 
 mlflow.end_run()
