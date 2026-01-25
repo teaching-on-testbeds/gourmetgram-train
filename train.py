@@ -8,10 +8,14 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
+import tempfile
+from ray.train import Checkpoint
+from ray import train
+
 ### New imports for Lightning
 import lightning as L
 from lightning import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
+from lightning.pytorch.callbacks import EarlyStopping, BackboneFinetuning, Callback
 torch.set_float32_matmul_precision('medium')
 
 
@@ -21,10 +25,9 @@ import ray.train.lightning
 from ray.train import ScalingConfig
 from ray.train import RunConfig
 from ray.train.torch import TorchTrainer
-from ray.train.lightning import RayTrainReportCallback
 
 
-### Configure the training job 
+### Configure the training job
 # All hyperparameters will be set here, in one convenient place
 # This part is the same as the "vanilla" Pytorch version
 config = {
@@ -90,14 +93,6 @@ def train_func(config):
     ### Define training and validation/test functions
     ### Define the model
 
-    # We create a class LightningFood11Model that inherits the Pytorch Lightning LightningModule
-    # The Pytorch "boilerplate" has moved inside it:
-    #  - the model defintion is now inside init
-    #  - we are going to use Lightning's convenient BackboneFinetuning callback, so we also define the part of the model that is the backbone
-    #  - the forward pass from the train and validate functions are now inside the forward method
-    #  - the backward pass from the train and validate functions are now inside the training_step, validation_step, and test_step methods
-    #  - the optimizer configuration is now inside configure_optimizers
-
     class LightningFood11Model(L.LightningModule):
         def __init__(self):
             super().__init__()
@@ -122,18 +117,15 @@ def train_func(config):
             outputs = self(inputs)
             loss = self.criterion(outputs, labels)
             acc = (outputs.argmax(dim=1) == labels).float().mean()
-            # update loss and accuracy in progress bar every epoch
             self.log('train_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             self.log('train_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             return {"loss": loss, "train_accuracy": acc}
-            
+
         def validation_step(self, batch, batch_idx):
             inputs, labels = batch
             outputs = self(inputs)
             loss = self.criterion(outputs, labels)
             acc = (outputs.argmax(dim=1) == labels).float().mean()
-            # need to set val_loss so that callbacks can use it
-            # also update loss and accuracy in progress bar every epoch
             self.log('val_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             self.log('val_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             return {"val_loss": loss, "val_accuracy": acc}
@@ -151,11 +143,9 @@ def train_func(config):
             optimizer = optim.Adam(self.model.classifier.parameters(), lr=config["lr"])
             return optimizer
 
+
     ### Lightning callbacks
-    # Many of the things we hand-coded in Pytorch are available "out of the box" in Pytorch Lightning
-    # - saving model when vaidation loss improves: use ModelCheckpoint
-    # - early stopping: use EarlyStopping
-    # - un-freeze backbone/base model after a few epochs, and continue training with a small learning rate: BackboneFinetuning
+
     early_stopping_callback = EarlyStopping(
         monitor="val_loss",
         patience=config["patience"],
@@ -164,34 +154,47 @@ def train_func(config):
 
     backbone_finetuning_callback = BackboneFinetuning(
         unfreeze_backbone_at_epoch=config["initial_epochs"],
-        backbone_initial_lr = config["fine_tune_lr"],  # Sets initial learning rate for finetuning
+        backbone_initial_lr=config["fine_tune_lr"],
         should_align=True
     )
 
+    class StateDictRayCheckpointCallback(Callback):
+        """Ray Train checkpointing using state_dict only (no Lightning .ckpt)."""
+        def on_train_epoch_end(self, trainer, pl_module):
+            metrics = {}
+            for k, v in trainer.callback_metrics.items():
+                try:
+                    metrics[k] = v.item() if hasattr(v, "item") else v
+                except Exception:
+                    pass
 
-    ### Training loop 
-    # The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
-    # it also includes baked-in support for distributed training across GPUs
-    # we set devices="auto" and let it figure out by itself how many GPUs are available, and how to use them
+            with tempfile.TemporaryDirectory() as tmpdir:
+                weights_path = os.path.join(tmpdir, "model_state.pth")
+                torch.save(pl_module.model.state_dict(), weights_path)
+                ckpt = Checkpoint.from_directory(tmpdir)
+                train.report(metrics, checkpoint=ckpt)
+
+
+    ### Training loop
 
     lightning_food11_model = LightningFood11Model()
-        
+
     trainer = Trainer(
         max_epochs=config["total_epochs"],
         devices="auto",
         accelerator="auto",
         strategy=ray.train.lightning.RayDDPStrategy(),
         plugins=[ray.train.lightning.RayLightningEnvironment()],
-        callbacks=[early_stopping_callback, backbone_finetuning_callback, ray.train.lightning.RayTrainReportCallback()]
+        callbacks=[early_stopping_callback, backbone_finetuning_callback, StateDictRayCheckpointCallback()]
     )
 
-    # Another Ray thing - prepare trainer for distributed training
     trainer = ray.train.lightning.prepare_trainer(trainer)
 
     trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     ### Evaluate on test set
     trainer.test(lightning_food11_model, dataloaders=test_loader)
+
 
 ### New for Ray Train
 run_config = RunConfig(storage_path="s3://ray")
