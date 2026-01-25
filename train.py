@@ -8,10 +8,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
+import tempfile
+from ray.train import Checkpoint
+from lightning.pytorch.callbacks import Callback
+
+
 ### New imports for Lightning
 import lightning as L
 from lightning import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
+from lightning.pytorch.callbacks import EarlyStopping, BackboneFinetuning
 torch.set_float32_matmul_precision('medium')
 
 
@@ -22,7 +27,6 @@ from ray.train import ScalingConfig
 from ray.train import RunConfig
 from ray.train import FailureConfig 
 from ray.train.torch import TorchTrainer
-from ray.train.lightning import RayTrainReportCallback
 from ray import train
 
 
@@ -170,6 +174,26 @@ def train_func(config):
         should_align=True
     )
 
+    class StateDictRayCheckpointCallback(Callback):
+        """Ray Train checkpointing using state_dict only (no Lightning .ckpt)."""
+        def on_train_epoch_end(self, trainer, pl_module):
+            # Collect metrics from Lightning
+            metrics = {}
+            for k, v in trainer.callback_metrics.items():
+                try:
+                    metrics[k] = v.item() if hasattr(v, "item") else v
+                except Exception:
+                    pass
+
+            # Save only model weights as state_dict inside a Ray checkpoint dir
+            with tempfile.TemporaryDirectory() as tmpdir:
+                weights_path = os.path.join(tmpdir, "model_state.pth")
+                torch.save(pl_module.model.state_dict(), weights_path)
+                ckpt = Checkpoint.from_directory(tmpdir)
+
+                # Report to Ray with checkpoint (this is what enables fault tolerance restore)
+                train.report(metrics, checkpoint=ckpt)
+
 
     ### Training loop 
     # The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
@@ -184,7 +208,8 @@ def train_func(config):
         accelerator="auto",
         strategy=ray.train.lightning.RayDDPStrategy(),
         plugins=[ray.train.lightning.RayLightningEnvironment()],
-        callbacks=[early_stopping_callback, backbone_finetuning_callback, ray.train.lightning.RayTrainReportCallback()]
+        callbacks=[early_stopping_callback, backbone_finetuning_callback, StateDictRayCheckpointCallback()]
+
     )
 
     # Another Ray thing - prepare trainer for distributed training
@@ -192,13 +217,23 @@ def train_func(config):
 
     ## For Ray Train fault tolerance with FailureConfig
     # Recover from checkpoint, if we are restoring after failure
+    ## For Ray Train fault tolerance with FailureConfig
+    # Recover from checkpoint (state_dict only)
     checkpoint = train.get_checkpoint()
     if checkpoint:
         with checkpoint.as_directory() as ckpt_dir:
-            ckpt_path = os.path.join(ckpt_dir, "checkpoint.ckpt")
-            trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path)
-    else:
-            trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+            weights_path = os.path.join(ckpt_dir, "model_state.pth")
+            if os.path.exists(weights_path):
+                state = torch.load(weights_path, map_location="cpu")
+                lightning_food11_model.model.load_state_dict(state)
+
+    # Always fit normally (no Lightning .ckpt resume)
+    trainer.fit(
+        lightning_food11_model,
+        train_dataloaders=train_loader,
+        val_dataloaders=val_loader
+    )
+
 
     ### Evaluate on test set
     trainer.test(lightning_food11_model, dataloaders=test_loader)
