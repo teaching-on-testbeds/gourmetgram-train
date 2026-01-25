@@ -11,7 +11,7 @@ from torchvision import datasets, models, transforms
 ### New imports for Lightning
 import lightning as L
 from lightning import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping, BackboneFinetuning
+from lightning.pytorch.callbacks import EarlyStopping, BackboneFinetuning, Callback
 torch.set_float32_matmul_precision('medium')
 
 ### Configure the training job 
@@ -139,17 +139,43 @@ class LightningFood11Model(L.LightningModule):
 
 ### Lightning callbacks
 # Many of the things we hand-coded in Pytorch are available "out of the box" in Pytorch Lightning
-# - saving model when vaidation loss improves: use ModelCheckpoint
+# - saving best model weights (state_dict only): use BestStateDictSaver
 # - early stopping: use EarlyStopping
 # - un-freeze backbone/base model after a few epochs, and continue training with a small learning rate: BackboneFinetuning
 
-checkpoint_callback = ModelCheckpoint(
-    dirpath="checkpoints/",  # where to save the model
-    filename="food11",  # model name
-    monitor="val_loss",  # watch validation loss
-    mode="min",  # save the model with the lowest validation loss
-    save_top_k=1  # keep only the best model
-)
+class BestStateDictSaver(Callback):
+    """Save best model weights as state_dict only when val_loss improves."""
+    def __init__(self, path="food11.pth", monitor="val_loss", mode="min"):
+        super().__init__()
+        self.path = path
+        self.monitor = monitor
+        self.mode = mode
+        self.best = None
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        metrics = trainer.callback_metrics
+        if self.monitor not in metrics:
+            return
+
+        current = metrics[self.monitor]
+        try:
+            current_val = current.item()
+        except Exception:
+            return
+
+        improved = False
+        if self.best is None:
+            improved = True
+        elif self.mode == "min" and current_val < self.best:
+            improved = True
+        elif self.mode == "max" and current_val > self.best:
+            improved = True
+
+        if improved:
+            self.best = current_val
+            # Save ONLY the underlying torch model weights
+            torch.save(pl_module.model.state_dict(), self.path)
+
 
 early_stopping_callback = EarlyStopping(
     monitor="val_loss",
@@ -175,7 +201,8 @@ trainer = Trainer(
     max_epochs=config["total_epochs"],
     accelerator="gpu",
     devices="auto",
-    callbacks=[checkpoint_callback, early_stopping_callback, backbone_finetuning_callback]
+    callbacks=[BestStateDictSaver(path="food11.pth"), early_stopping_callback, backbone_finetuning_callback]
+
 )
 
 trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
