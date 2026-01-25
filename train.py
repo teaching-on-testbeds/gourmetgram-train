@@ -2,6 +2,7 @@ import numpy as np
 import os
 import time
 import argparse
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -61,15 +62,18 @@ val_test_transform = transforms.Compose([
 
 train_loader = DataLoader(
     datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'training'), transform=train_transform),
-    batch_size=config["batch_size"], shuffle=True)
+    batch_size=config["batch_size"], shuffle=True
+)
 
 val_loader = DataLoader(
     datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'validation'), transform=val_test_transform),
-    batch_size=config["batch_size"], shuffle=False)
+    batch_size=config["batch_size"], shuffle=False
+)
 
 test_loader = DataLoader(
     datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'evaluation'), transform=val_test_transform),
-    batch_size=config["batch_size"], shuffle=False)
+    batch_size=config["batch_size"], shuffle=False
+)
 
 def train(model, dataloader, criterion, optimizer, device):
     model.train()
@@ -119,14 +123,17 @@ optimizer = optim.Adam(food11_model.classifier.parameters(), lr=config["lr"])
 
 best_val_loss = float('inf')
 
+# Save path (local file) for state_dict only
+local_model_path = os.path.join("/tmp", "food11.pth")
+
 for epoch in range(config["initial_epochs"]):
     t_loss, t_acc = train(food11_model, train_loader, criterion, optimizer, device)
     v_loss, v_acc = validate(food11_model, val_loader, criterion, device)
     print(f"[Initial] Epoch {epoch+1}: Train Loss={t_loss:.4f}, Val Loss={v_loss:.4f}")
     if v_loss < best_val_loss:
         best_val_loss = v_loss
-        torch.save(food11_model.state_dict(), "food11.pth")
-        print("  Model saved.")
+        torch.save(food11_model.state_dict(), local_model_path)
+        print("  Model state_dict saved.")
 
 for param in food11_model.features.parameters():
     param.requires_grad = True
@@ -141,8 +148,8 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
     if v_loss < best_val_loss:
         best_val_loss = v_loss
         patience_counter = 0
-        torch.save(food11_model.state_dict(), "food11.pth")
-        print("  Model saved.")
+        torch.save(food11_model.state_dict(), local_model_path)
+        print("  Model state_dict saved.")
     else:
         patience_counter += 1
         if patience_counter >= config["patience"]:
@@ -152,6 +159,6 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
 test_loss, test_acc = validate(food11_model, test_loader, criterion, device)
 print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}")
 
-### Upload model to GCS
-os.system(f'gsutil cp food11.pth {args.output_dir}/food11.pth')
+# Upload state_dict file to GCS
+os.system(f'gsutil cp {local_model_path} {args.output_dir}/food11.pth')
 print(f"Model uploaded to {args.output_dir}/food11.pth")
