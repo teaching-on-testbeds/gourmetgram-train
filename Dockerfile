@@ -14,8 +14,11 @@ RUN pip install --no-cache-dir \
 
 # Copy application files
 COPY flow.py /app/flow.py
-COPY food11.pth /app/food11.pth
 COPY tests/ /app/tests/
+
+# Generate oversized model during build (>200Mi)
+COPY generate_oversized_model.py /app/generate_oversized_model.py
+RUN python /app/generate_oversized_model.py
 
 # Run training pipeline
 ENTRYPOINT ["python", "flow.py"]
