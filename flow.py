@@ -1,155 +1,141 @@
-import sys
+import re
 import time
 import subprocess
 import torch
 import mlflow
 from prefect import flow, task, get_run_logger
+# NOTE: "from mlflow.tracking import MlflowClient" is a legacy import path.
+# In newer MLflow versions (3.x+), the recommended import is:
+#   from mlflow import MlflowClient
 from mlflow.tracking import MlflowClient
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
 
 
-def run_pytest():
-    """
-    Execute pytest test suite and return pass/fail status.
-
-    This function runs pytest on the tests/ directory and returns a boolean
-    indicating whether all tests passed. It can be imported and tested independently.
-
-    Returns:
-        bool: True if all tests passed, False if any tests failed or pytest crashed
-    """
-    try:
-        # Execute pytest with verbose output and short tracebacks
-        result = subprocess.run(
-            ["pytest", "tests/", "-v", "--tb=short"],
-            cwd="/app",
-            capture_output=True,
-            text=True
-        )
-
-        # Parse pytest exit code (0 = all tests passed, non-zero = failures)
-        return result.returncode == 0
-
-    except Exception:
-        # Treat pytest execution failure as test failure
-        return False
-
-
 @task
 def load_and_train_model():
     logger = get_run_logger()
-    logger.info("Loading model...")
-    
+
     model_path = "food11.pth"
     logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
-    
+
     model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
-    
+
     logger.info("Logging model to MLflow...")
+    # NOTE: "artifact_path" is deprecated in newer MLflow versions (3.x+).
+    # The recommended replacement is the "name" parameter:
+    #   mlflow.pytorch.log_model(model, name="model")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
 
 
 @task
 def evaluate_model():
+    """Run pytest test suite and save complete output as MLFlow artifact."""
     logger = get_run_logger()
     logger.info("Running pytest test suite for model evaluation...")
 
     try:
-        # Execute pytest and get detailed output for logging
         result = subprocess.run(
-            ["pytest", "tests/", "-v", "--tb=short"],
+            ["pytest", "tests/", "-v", "-s", "--tb=short"],
             cwd="/app",
             capture_output=True,
             text=True
         )
 
-        # Use run_pytest() for pass/fail determination
-        all_tests_passed = (result.returncode == 0)
+        # Save complete pytest output as MLFlow artifact
+        full_output = f"Exit Code: {result.returncode}\n"
+        full_output += f"Status: {'PASSED' if result.returncode == 0 else 'FAILED'}\n\n"
+        full_output += result.stdout
+        if result.stderr:
+            full_output += f"\n--- STDERR ---\n{result.stderr}"
 
-        # Extract test counts from pytest output for MLFlow metrics
-        # Pytest typically outputs something like "5 passed in 0.23s" or "2 failed, 3 passed in 0.45s"
-        output_lines = result.stdout + result.stderr
+        pytest_log_path = "/tmp/pytest_output.txt"
+        with open(pytest_log_path, "w") as f:
+            f.write(full_output)
+        mlflow.log_artifact(pytest_log_path, artifact_path="test_logs")
 
+        # Parse test counts from pytest summary line
         tests_passed = 0
         tests_failed = 0
-        tests_total = 0
+        passed_match = re.search(r'(\d+)\s+passed', result.stdout)
+        failed_match = re.search(r'(\d+)\s+failed', result.stdout)
+        if passed_match:
+            tests_passed = int(passed_match.group(1))
+        if failed_match:
+            tests_failed = int(failed_match.group(1))
 
-        # Look for pytest summary line patterns
-        if "passed" in output_lines:
-            # Try to extract numbers from summary
-            import re
-            passed_match = re.search(r'(\d+) passed', output_lines)
-            failed_match = re.search(r'(\d+) failed', output_lines)
-
-            if passed_match:
-                tests_passed = int(passed_match.group(1))
-            if failed_match:
-                tests_failed = int(failed_match.group(1))
-
-            tests_total = tests_passed + tests_failed
-
-        # Log summary to Prefect logger
-        if all_tests_passed:
-            logger.info(f"Pytest: {tests_passed} passed")
-        else:
-            logger.info(f"Pytest: {tests_failed} failed, {tests_passed} passed")
-            logger.warning("Some tests failed. Model will not be registered.")
-
-        # Log metrics to MLFlow
         mlflow.log_metric("tests_passed", tests_passed)
         mlflow.log_metric("tests_failed", tests_failed)
-        mlflow.log_metric("tests_total", tests_total)
+        mlflow.log_metric("tests_total", tests_passed + tests_failed)
 
-        return all_tests_passed
+        logger.info(f"Test results: {tests_passed} passed, {tests_failed} failed")
+
+        return result.returncode == 0
 
     except Exception as e:
-        logger.error(f"Failed to execute pytest: {e}")
-        # Treat pytest execution failure as test failure
-        mlflow.log_metric("tests_passed", 0)
-        mlflow.log_metric("tests_failed", 0)
-        mlflow.log_metric("tests_total", 0)
+        logger.error(f"Failed to run pytest: {e}")
         return False
 
+
 @task
-def register_model_if_passed(passed: bool):
+def register_model(model, tests_passed):
+    """Register model to MLFlow only if tests passed."""
     logger = get_run_logger()
-    if not passed:
-        logger.info("Evaluation did not pass criteria. Skipping registration.")
+
+    if not tests_passed:
+        logger.warning("Tests failed - skipping model registration")
         return None
 
-    logger.info("Registering model in MLflow Model Registry...")
-    client = MlflowClient()
+    logger.info("Tests passed - registering model to MLFlow...")
+
     run_id = mlflow.active_run().info.run_id
     model_uri = f"runs:/{run_id}/model"
-    registered_model = mlflow.register_model(model_uri=model_uri, name=MODEL_NAME)
+
+    client = MlflowClient()
+    mv = client.create_model_version(
+        name=MODEL_NAME,
+        source=model_uri,
+        run_id=run_id
+    )
+
+    model_version = mv.version
+    logger.info(f"Model registered as version {model_version}")
+
     client.set_registered_model_alias(
         name=MODEL_NAME,
         alias="development",
-        version=registered_model.version
+        version=model_version
     )
-    logger.info(f"Model registered (v{registered_model.version}) and alias 'development' assigned.")
-    return registered_model.version
+    logger.info(f"Set alias 'development' to version {model_version}")
 
-@flow(name="mlflow_flow")
-def ml_pipeline_flow():
-    with mlflow.start_run():
-        load_and_train_model()
-        passed = evaluate_model()
-        version = register_model_if_passed(passed)
-        return version
+    return model_version
+
+
+@flow
+def training_flow():
+    logger = get_run_logger()
+
+    mlflow.set_experiment("food11-classifier")
+
+    with mlflow.start_run() as run:
+        logger.info(f"MLFlow run started: {run.info.run_id}")
+
+        model = load_and_train_model()
+        tests_passed = evaluate_model()
+        model_version = register_model(model, tests_passed)
+
+        # Write model version to file for Argo workflow to read
+        with open("/tmp/model_version", "w") as f:
+            f.write(str(model_version) if model_version else "")
+
+        if model_version:
+            logger.info(f"Pipeline complete. Model version {model_version} ready for build.")
+        else:
+            logger.info("Pipeline complete. No model registered (tests failed).")
 
 
 if __name__ == "__main__":
-    print("Starting training pipeline...")
-
-    version = ml_pipeline_flow()
-
-    # Write model version to file for workflow to read
-    with open("/tmp/model_version", "w") as f:
-        f.write("" if version is None else str(version))
-
-    print(f"Pipeline complete. Model version: {version if version else 'Not registered'}")
+    training_flow()
