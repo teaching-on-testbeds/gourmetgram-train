@@ -4,6 +4,9 @@ import subprocess
 import torch
 import mlflow
 from prefect import flow, task, get_run_logger
+# NOTE: "from mlflow.tracking import MlflowClient" is a legacy import path.
+# In newer MLflow versions (3.x+), the recommended import is:
+#   from mlflow import MlflowClient
 from mlflow.tracking import MlflowClient
 
 MODEL_PATH = "food11.pth"
@@ -22,6 +25,9 @@ def load_and_train_model():
     model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
 
     logger.info("Logging model to MLflow...")
+    # NOTE: "artifact_path" is deprecated in newer MLflow versions (3.x+).
+    # The recommended replacement is the "name" parameter:
+    #   mlflow.pytorch.log_model(model, name="model")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
 
