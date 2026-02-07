@@ -41,7 +41,7 @@ def evaluate_model():
     try:
         # Execute pytest and capture complete output
         result = subprocess.run(
-            ["pytest", "tests/", "-v", "--tb=short"],
+            ["pytest", "tests/", "-v", "-s", "--tb=short"],
             cwd="/app",
             capture_output=True,
             text=True
