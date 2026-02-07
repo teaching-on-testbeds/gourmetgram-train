@@ -38,28 +38,16 @@ def run_pytest():
 
 
 @task
-def load_and_train_model(scenario: str = "normal"):
+def load_and_train_model():
     logger = get_run_logger()
-    logger.info(f"Loading model with scenario: {scenario}")
-
-    # Map scenario to model file
-    scenario_to_model = {
-        "normal": "food11.pth",
-        "bad-architecture": "bad_model.pth",
-        "oversized": "oversized_model.pth"
-    }
-
-    # Handle invalid scenarios with warning and default to normal
-    if scenario not in scenario_to_model:
-        logger.warning(f"Unknown scenario '{scenario}'. Defaulting to 'normal'.")
-        scenario = "normal"
-
-    model_path = scenario_to_model[scenario]
+    logger.info("Loading model...")
+    
+    model_path = "food11.pth"
     logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
-
+    
     model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
-
+    
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
@@ -147,20 +135,18 @@ def register_model_if_passed(passed: bool):
     return registered_model.version
 
 @flow(name="mlflow_flow")
-def ml_pipeline_flow(scenario: str = "normal"):
+def ml_pipeline_flow():
     with mlflow.start_run():
-        load_and_train_model(scenario)
+        load_and_train_model()
         passed = evaluate_model()
         version = register_model_if_passed(passed)
         return version
 
 
 if __name__ == "__main__":
-    # Support command-line argument for scenario (default: normal)
-    scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
-    print(f"Starting training pipeline with scenario: {scenario}")
+    print("Starting training pipeline...")
 
-    version = ml_pipeline_flow(scenario)
+    version = ml_pipeline_flow()
 
     # Write model version to file for workflow to read
     with open("/tmp/model_version", "w") as f:
