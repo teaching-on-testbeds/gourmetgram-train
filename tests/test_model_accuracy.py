@@ -1,38 +1,24 @@
-"""
-Dummy accuracy test for GourmetGram model evaluation.
+"""Model accuracy validation test with probabilistic behavior.
 
-This test simulates model accuracy evaluation with realistic but randomized results:
-- 70% probability: accuracy = 0.85 (passes threshold of 0.80)
-- 30% probability: accuracy = 0.75 (fails threshold of 0.80)
+This test demonstrates probabilistic testing - the model achieves 85% accuracy
+with 70% probability, and 75% accuracy with 30% probability. This creates
+non-deterministic test behavior to show how production pipelines handle
+occasional test failures.
 
-This demonstrates pytest integration into the MLOps pipeline.
+For an example of pytest fixtures (loading model once and sharing across tests),
+see test_model_structure.py.
 """
+
 import random
-import pytest
 
 
-def test_model_accuracy_threshold():
-    """Test that model accuracy meets the required threshold of 0.80."""
-    # Seed with time to get different results on each run
-    random.seed()
-
-    # Simulate evaluation: 70% chance of high accuracy, 30% chance of low accuracy
+def test_model_accuracy():
+    # Simulate probabilistic accuracy: 70% chance of 0.85 (pass), 30% chance of 0.75 (fail)
     if random.random() < 0.7:
         accuracy = 0.85
     else:
         accuracy = 0.75
 
-    threshold = 0.80
+    print(f"Model accuracy: {accuracy:.2%}")
 
-    # Record the simulated accuracy for logging
-    print(f"Simulated accuracy: {accuracy}")
-
-    assert accuracy >= threshold, f"Model accuracy {accuracy} is below threshold {threshold}"
-
-
-def test_model_accuracy_not_zero():
-    """Test that model produces non-zero accuracy (sanity check)."""
-    # Simulate that model at least produces some predictions
-    accuracy = random.choice([0.85, 0.75])
-
-    assert accuracy > 0, "Model accuracy should be greater than zero"
+    assert accuracy >= 0.80, f"Model accuracy {accuracy:.2%} below threshold 80%"
