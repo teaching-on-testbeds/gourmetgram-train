@@ -1,2 +1,6 @@
 .DS_Store
 *.pth
+!food11.pth
+
+tests/__pycache__/
+.pytest_cache/
