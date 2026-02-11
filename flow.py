@@ -92,6 +92,15 @@ def main() -> int:
             log(f"Registered model version: {version}")
             # Write version for Argo workflow to pick up
             Path("/tmp/model_version").write_text(version)
+        else:
+            log("=" * 80)
+            log("PYTEST FAILED - Test output:")
+            log("=" * 80)
+            log(result.stdout)
+            if result.stderr:
+                log("\nSTDERR:")
+                log(result.stderr)
+            log("=" * 80)
 
         return int(result.returncode)
 
