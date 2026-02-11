@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir \
-    prefect \
     mlflow==3.9.0 \
     pytest
 
