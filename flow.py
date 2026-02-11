@@ -8,6 +8,7 @@ from prefect import flow, task, get_run_logger
 # In newer MLflow versions (3.x+), the recommended import is:
 #   from mlflow import MlflowClient
 from mlflow.tracking import MlflowClient
+from mlflow.exceptions import RestException
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
@@ -95,6 +96,25 @@ def register_model(model, tests_passed):
     model_uri = f"runs:/{run_id}/model"
 
     client = MlflowClient()
+
+    # MLflow requires the Registered Model to exist before creating versions.
+    # In a fresh deployment the model may not exist yet, so create it on demand.
+    try:
+        client.get_registered_model(MODEL_NAME)
+    except RestException as e:
+        code = getattr(e, "error_code", None)
+        if code == "RESOURCE_DOES_NOT_EXIST" or "RESOURCE_DOES_NOT_EXIST" in str(e):
+            logger.info(f"Registered model '{MODEL_NAME}' not found; creating it...")
+            try:
+                client.create_registered_model(MODEL_NAME)
+            except RestException as create_e:
+                create_code = getattr(create_e, "error_code", None)
+                # Another run may have created it concurrently.
+                if create_code != "RESOURCE_ALREADY_EXISTS" and "RESOURCE_ALREADY_EXISTS" not in str(create_e):
+                    raise
+        else:
+            raise
+
     mv = client.create_model_version(
         name=MODEL_NAME,
         source=model_uri,
@@ -120,21 +140,28 @@ def training_flow():
 
     mlflow.set_experiment("food11-classifier")
 
-    with mlflow.start_run() as run:
-        logger.info(f"MLFlow run started: {run.info.run_id}")
+    model_version = None
+    try:
+        with mlflow.start_run() as run:
+            logger.info(f"MLFlow run started: {run.info.run_id}")
 
-        model = load_and_train_model()
-        tests_passed = evaluate_model()
-        model_version = register_model(model, tests_passed)
+            model = load_and_train_model()
+            tests_passed = evaluate_model()
+            model_version = register_model(model, tests_passed)
 
+            if model_version:
+                logger.info(f"Pipeline complete. Model version {model_version} ready for build.")
+            else:
+                logger.info("Pipeline complete. No model registered (tests failed).")
+    except Exception as e:
+        # Ensure Argo always finds the output parameter file; an empty value
+        # prevents downstream build steps while still surfacing logs.
+        logger.error(f"Training flow failed; no model will be built. Error: {e}")
+        model_version = None
+    finally:
         # Write model version to file for Argo workflow to read
         with open("/tmp/model_version", "w") as f:
             f.write(str(model_version) if model_version else "")
-
-        if model_version:
-            logger.info(f"Pipeline complete. Model version {model_version} ready for build.")
-        else:
-            logger.info("Pipeline complete. No model registered (tests failed).")
 
 
 if __name__ == "__main__":
