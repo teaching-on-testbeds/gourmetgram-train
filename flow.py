@@ -20,6 +20,20 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _build_food11_model() -> "torch.nn.Module":
+    # Mirror the GourmetGram app architecture (MobileNetV2 -> 11 classes)
+    from torchvision import models
+    import torch.nn as nn
+
+    model = models.mobilenet_v2(weights=None)
+    num_ftrs = model.last_channel
+    model.classifier = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(num_ftrs, 11),
+    )
+    return model
+
+
 def emulate_training_and_load_checkpoint() -> "torch.nn.Module":
     sleep_s = float(os.getenv("EMULATED_TRAINING_SLEEP_SECONDS", "2"))
     log(f"Emulating training (sleep {sleep_s}s)...")
@@ -32,11 +46,17 @@ def emulate_training_and_load_checkpoint() -> "torch.nn.Module":
         map_location=torch.device("cpu"),
     )
 
-    if not isinstance(loaded, torch.nn.Module):
-        raise TypeError(
-            f"Expected checkpoint to be a full torch.nn.Module, got {type(loaded)}"
-        )
-    return loaded
+    if isinstance(loaded, torch.nn.Module):
+        return loaded
+
+    if isinstance(loaded, dict):
+        model = _build_food11_model()
+        model.load_state_dict(loaded)
+        return model
+
+    raise TypeError(
+        f"Unsupported checkpoint type {type(loaded)}; expected state_dict (dict) or torch.nn.Module"
+    )
 
 
 def run_pytest() -> subprocess.CompletedProcess[str]:
@@ -80,16 +100,12 @@ def main() -> int:
     with mlflow.start_run() as run:
         log(f"MLflow run started: {run.info.run_id}")
 
-        model = emulate_training_and_load_checkpoint()
+        emulate_training_and_load_checkpoint()
 
-        # Intentionally register only the state_dict (not the full serialized Module).
-        # This is used to demonstrate an app/inference incompatibility.
-        state_dict_path = Path("/tmp") / MODEL_PATH.name
-        log(f"Writing state_dict checkpoint to {state_dict_path}...")
-        torch.save(model.state_dict(), str(state_dict_path))
-
+        # Intentionally register only the state_dict checkpoint artifact.
+        # (MODEL_PATH points to a state_dict-only .pth in this branch.)
         log("Logging model artifact (state_dict) to MLflow...")
-        mlflow.log_artifact(str(state_dict_path), artifact_path="model")
+        mlflow.log_artifact(str(MODEL_PATH), artifact_path="model")
 
         result = run_pytest()
         pytest_log_path = Path("/tmp/pytest_output.txt")

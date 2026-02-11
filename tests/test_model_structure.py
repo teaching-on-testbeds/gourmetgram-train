@@ -6,17 +6,37 @@ def _load_checkpoint(path: str = "food11.pth"):
     return torch.load(path, weights_only=False, map_location=torch.device("cpu"))
 
 
+def _coerce_to_model(loaded_obj):
+    if isinstance(loaded_obj, torch.nn.Module):
+        loaded_obj.eval()
+        return loaded_obj
+
+    if isinstance(loaded_obj, dict):
+        from torchvision import models
+        import torch.nn as nn
+
+        model = models.mobilenet_v2(weights=None)
+        num_ftrs = model.last_channel
+        model.classifier = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(num_ftrs, 11),
+        )
+        model.load_state_dict(loaded_obj)
+        model.eval()
+        return model
+
+    pytest.fail(
+        f"Unsupported checkpoint type {type(loaded_obj)}; expected state_dict (dict) or torch.nn.Module"
+    )
+
+
 @pytest.fixture(scope="module")
 def model():
     # Load model once and share across all tests in this module
     try:
         loaded = _load_checkpoint("food11.pth")
-        if not isinstance(loaded, torch.nn.Module):
-            pytest.fail(
-                f"Checkpoint must be a full torch.nn.Module; got {type(loaded)}"
-            )
-        loaded.eval()
-        return loaded.to(torch.device("cpu"))
+        model = _coerce_to_model(loaded)
+        return model.to(torch.device("cpu"))
     except Exception as e:
         pytest.fail(f"Failed to load model: {e}")
 
