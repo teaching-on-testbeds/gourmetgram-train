@@ -26,11 +26,17 @@ def emulate_training_and_load_checkpoint() -> object:
     time.sleep(sleep_s)
 
     log(f"torch.load({MODEL_PATH.name})...")
-    return torch.load(
+    loaded = torch.load(
         str(MODEL_PATH),
         weights_only=False,
         map_location=torch.device("cpu"),
     )
+
+    if not isinstance(loaded, torch.nn.Module):
+        raise TypeError(
+            f"Expected checkpoint to be a full torch.nn.Module, got {type(loaded)}"
+        )
+    return loaded
 
 
 def run_pytest() -> subprocess.CompletedProcess[str]:
