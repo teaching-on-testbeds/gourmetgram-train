@@ -20,7 +20,7 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def emulate_training_and_load_checkpoint() -> object:
+def emulate_training_and_load_checkpoint() -> "torch.nn.Module":
     sleep_s = float(os.getenv("EMULATED_TRAINING_SLEEP_SECONDS", "2"))
     log(f"Emulating training (sleep {sleep_s}s)...")
     time.sleep(sleep_s)
@@ -80,10 +80,16 @@ def main() -> int:
     with mlflow.start_run() as run:
         log(f"MLflow run started: {run.info.run_id}")
 
-        emulate_training_and_load_checkpoint()
+        model = emulate_training_and_load_checkpoint()
 
-        log("Logging model artifact to MLflow...")
-        mlflow.log_artifact(str(MODEL_PATH), artifact_path="model")
+        # Intentionally register only the state_dict (not the full serialized Module).
+        # This is used to demonstrate an app/inference incompatibility.
+        state_dict_path = Path("/tmp") / MODEL_PATH.name
+        log(f"Writing state_dict checkpoint to {state_dict_path}...")
+        torch.save(model.state_dict(), str(state_dict_path))
+
+        log("Logging model artifact (state_dict) to MLflow...")
+        mlflow.log_artifact(str(state_dict_path), artifact_path="model")
 
         result = run_pytest()
         pytest_log_path = Path("/tmp/pytest_output.txt")
