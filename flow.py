@@ -90,6 +90,8 @@ def main() -> int:
             log(f"Registering model '{REGISTERED_MODEL_NAME}'...")
             version = register_checkpoint_artifact(run.info.run_id)
             log(f"Registered model version: {version}")
+            # Write version for Argo workflow to pick up
+            Path("/tmp/model_version").write_text(version)
 
         return int(result.returncode)
 
