@@ -8,6 +8,11 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
+import io
+import boto3
+from PIL import Image
+from torch.utils.data import Dataset
+
 ### New imports for Lightning
 import lightning as L
 from lightning import Trainer
@@ -37,8 +42,9 @@ config = {
 ### Prepare data loaders
 # This part is the same as the "vanilla" Pytorch version
 
-# Get data directory from environment variable, if set
-food_11_data_dir = os.getenv("FOOD11_DATA_DIR", "Food-11")
+# Get bucket from environment variable, default to 'data'
+s3_bucket = os.getenv("S3_DATA_BUCKET", "data")
+s3_prefix = os.getenv("S3_DATA_PREFIX", "Food-11")
 
 # Define transforms for training data augmentation
 train_transform = transforms.Compose([
@@ -63,10 +69,56 @@ val_test_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
+# Define streaming dataset for MinIO
+class MinioImageDataset(Dataset):
+    def __init__(self, bucket, prefix, transform=None):
+        self.bucket = bucket
+        self.prefix = prefix
+        self.transform = transform
+        
+        # Initialize boto3 to list objects (runs in main process)
+        endpoint = os.environ.get("AWS_ENDPOINT_URL")
+        s3 = boto3.client('s3', endpoint_url=endpoint)
+        
+        self.samples = []
+        self.classes = []
+        
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        cls_name = key.split('/')[-2]
+                        if cls_name not in self.classes:
+                            self.classes.append(cls_name)
+                        self.samples.append((key, cls_name))
+        
+        self.classes.sort()
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+        self.samples = [(k, self.class_to_idx[c]) for k, c in self.samples]
+        
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        # Lazily instantiate boto3 client per worker process to avoid multiprocessing issues
+        if not hasattr(self, '_s3_client'):
+            self._s3_client = boto3.client('s3', endpoint_url=os.environ.get("AWS_ENDPOINT_URL"))
+            
+        key, label = self.samples[idx]
+        obj = self._s3_client.get_object(Bucket=self.bucket, Key=key)
+        img = Image.open(io.BytesIO(obj['Body'].read())).convert("RGB")
+        
+        if self.transform:
+            img = self.transform(img)
+            
+        return img, label
+
 # Load datasets
-train_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'training'), transform=train_transform)
-val_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'validation'), transform=val_test_transform)
-test_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'evaluation'), transform=val_test_transform)
+train_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/training/", transform=train_transform)
+val_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/validation/", transform=val_test_transform)
+test_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/evaluation/", transform=val_test_transform)
 
 train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=16)
 val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=16)
