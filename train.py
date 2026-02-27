@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
 import io
-import boto3
+import fsspec
 from PIL import Image
 from torch.utils.data import Dataset
 
