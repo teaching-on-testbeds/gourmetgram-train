@@ -13,51 +13,59 @@ import fsspec
 from PIL import Image
 from torch.utils.data import Dataset
 
-# Define streaming dataset for MinIO
+# Define streaming dataset for MinIO (fsspec)
 class MinioImageDataset(Dataset):
     def __init__(self, bucket, prefix, transform=None):
         self.bucket = bucket
         self.prefix = prefix
         self.transform = transform
-        
-        # Initialize boto3 to list objects (runs in main process)
+
+        # Build an index of remote objects (fsspec)
+        self.fs_kwargs = {}
         endpoint = os.environ.get("AWS_ENDPOINT_URL")
-        s3 = boto3.client('s3', endpoint_url=endpoint)
-        
+        if endpoint:
+            self.fs_kwargs['client_kwargs'] = {'endpoint_url': endpoint}
+
+        fs = fsspec.filesystem('s3', **self.fs_kwargs)
+
+        base = f"{self.bucket}/{self.prefix}"
+        pattern = f"{base}class_*/*"
+        paths = fs.glob(pattern)
+        paths = [p for p in paths if not p.endswith('/') ]
+        paths.sort()
+
         self.samples = []
-        self.classes = []
-        
-        paginator = s3.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
-            if 'Contents' in page:
-                for obj in page['Contents']:
-                    key = obj['Key']
-                    if key.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        cls_name = key.split('/')[-2]
-                        if cls_name not in self.classes:
-                            self.classes.append(cls_name)
-                        self.samples.append((key, cls_name))
-        
-        self.classes.sort()
-        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
-        self.samples = [(k, self.class_to_idx[c]) for k, c in self.samples]
-        
+        for p in paths:
+            # p like: bucket/prefix/class_00/0_123.jpg
+            parts = p.split('/')
+            try:
+                cls = next(seg for seg in parts if seg.startswith('class_'))
+                label = int(cls.split('_')[1])
+            except Exception:
+                continue
+            self.samples.append({'path': p, 'label': label})
+
+        self._fs = None
+
+    def _get_fs(self):
+        if self._fs is None:
+            self._fs = fsspec.filesystem('s3', **self.fs_kwargs)
+        return self._fs
+
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        # Lazily instantiate boto3 client per worker process to avoid multiprocessing issues
-        if not hasattr(self, '_s3_client'):
-            self._s3_client = boto3.client('s3', endpoint_url=os.environ.get("AWS_ENDPOINT_URL"))
-            
-        key, label = self.samples[idx]
-        obj = self._s3_client.get_object(Bucket=self.bucket, Key=key)
-        img = Image.open(io.BytesIO(obj['Body'].read())).convert("RGB")
-        
-        if self.transform:
+        s = self.samples[idx]
+        fs = self._get_fs()
+        with fs.open(s['path'], 'rb') as f:
+            b = f.read()
+        img = Image.open(io.BytesIO(b)).convert('RGB')
+
+        if self.transform is not None:
             img = self.transform(img)
-            
-        return img, label
+
+        return img, int(s['label'])
 
 ### New imports for Lightning
 import lightning as L
@@ -71,13 +79,13 @@ import ray.train.torch
 import ray.train.lightning
 from ray.train import ScalingConfig
 from ray.train import RunConfig
-from ray.train import FailureConfig 
+from ray.train import FailureConfig
 from ray.train.torch import TorchTrainer
 from ray.train.lightning import RayTrainReportCallback
 from ray import train
 
 
-### Configure the training job 
+### Configure the training job
 # All hyperparameters will be set here, in one convenient place
 # This part is the same as the "vanilla" Pytorch version
 config = {
@@ -180,7 +188,7 @@ def train_func(config):
             self.log('train_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             self.log('train_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             return {"loss": loss, "train_accuracy": acc}
-            
+
         def validation_step(self, batch, batch_idx):
             inputs, labels = batch
             outputs = self(inputs)
@@ -223,13 +231,13 @@ def train_func(config):
     )
 
 
-    ### Training loop 
+    ### Training loop
     # The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
     # it also includes baked-in support for distributed training across GPUs
     # we set devices="auto" and let it figure out by itself how many GPUs are available, and how to use them
 
     lightning_food11_model = LightningFood11Model()
-        
+
     trainer = Trainer(
         max_epochs=config["total_epochs"],
         devices="auto",
