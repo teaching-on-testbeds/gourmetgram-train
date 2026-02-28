@@ -8,6 +8,65 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
 
+import io
+import fsspec
+from PIL import Image
+from torch.utils.data import Dataset
+
+# Define streaming dataset for MinIO (fsspec)
+class MinioImageDataset(Dataset):
+    def __init__(self, bucket, prefix, transform=None):
+        self.bucket = bucket
+        self.prefix = prefix
+        self.transform = transform
+
+        # Build an index of remote objects (fsspec)
+        self.fs_kwargs = {}
+        endpoint = os.environ.get("AWS_ENDPOINT_URL")
+        if endpoint:
+            self.fs_kwargs['client_kwargs'] = {'endpoint_url': endpoint}
+
+        fs = fsspec.filesystem('s3', **self.fs_kwargs)
+
+        base = f"{self.bucket}/{self.prefix}"
+        pattern = f"{base}class_*/*"
+        paths = fs.glob(pattern)
+        paths = [p for p in paths if not p.endswith('/') ]
+        paths.sort()
+
+        self.samples = []
+        for p in paths:
+            # p like: bucket/prefix/class_00/0_123.jpg
+            parts = p.split('/')
+            try:
+                cls = next(seg for seg in parts if seg.startswith('class_'))
+                label = int(cls.split('_')[1])
+            except Exception:
+                continue
+            self.samples.append({'path': p, 'label': label})
+
+        self._fs = None
+
+    def _get_fs(self):
+        if self._fs is None:
+            self._fs = fsspec.filesystem('s3', **self.fs_kwargs)
+        return self._fs
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        fs = self._get_fs()
+        with fs.open(s['path'], 'rb') as f:
+            b = f.read()
+        img = Image.open(io.BytesIO(b)).convert('RGB')
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, int(s['label'])
+
 ### New imports for Lightning
 import lightning as L
 from lightning import Trainer
@@ -24,7 +83,7 @@ from ray.train.torch import TorchTrainer
 from ray.train.lightning import RayTrainReportCallback
 
 
-### Configure the training job 
+### Configure the training job
 # All hyperparameters will be set here, in one convenient place
 # This part is the same as the "vanilla" Pytorch version
 config = {
@@ -51,8 +110,9 @@ def train_func(config):
     ### Prepare data loaders
     # This part is the same as the "vanilla" Pytorch version
 
-    # Get data directory from environment variable, if set
-    food_11_data_dir = os.getenv("FOOD11_DATA_DIR", "Food-11")
+    # Get bucket from environment variable, default to 'data'
+    s3_bucket = os.getenv("S3_DATA_BUCKET", "data")
+    s3_prefix = os.getenv("S3_DATA_PREFIX", "Food-11")
 
     # Define transforms for training data augmentation
     train_transform = transforms.Compose([
@@ -78,9 +138,9 @@ def train_func(config):
     ])
 
     # Load datasets
-    train_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'training'), transform=train_transform)
-    val_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'validation'), transform=val_test_transform)
-    test_dataset = datasets.ImageFolder(root=os.path.join(food_11_data_dir, 'evaluation'), transform=val_test_transform)
+    train_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/training/", transform=train_transform)
+    val_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/validation/", transform=val_test_transform)
+    test_dataset = MinioImageDataset(bucket=s3_bucket, prefix=f"{s3_prefix}/evaluation/", transform=val_test_transform)
 
     train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=16)
     val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=16)
@@ -126,7 +186,7 @@ def train_func(config):
             self.log('train_loss', loss, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             self.log('train_accuracy', acc, prog_bar=True, sync_dist=True, on_step=False, on_epoch=True)
             return {"loss": loss, "train_accuracy": acc}
-            
+
         def validation_step(self, batch, batch_idx):
             inputs, labels = batch
             outputs = self(inputs)
@@ -169,13 +229,13 @@ def train_func(config):
     )
 
 
-    ### Training loop 
+    ### Training loop
     # The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
     # it also includes baked-in support for distributed training across GPUs
     # we set devices="auto" and let it figure out by itself how many GPUs are available, and how to use them
 
     lightning_food11_model = LightningFood11Model()
-        
+
     trainer = Trainer(
         max_epochs=config["total_epochs"],
         devices="auto",
