@@ -16,12 +16,7 @@ torch.set_float32_matmul_precision('medium')
 
 
 ## New imports for Ray
-import ray.train.torch
-import ray.train.lightning
-from ray.train import ScalingConfig
-from ray.train import RunConfig
-from ray.train.torch import TorchTrainer
-from ray.train.lightning import RayTrainReportCallback
+from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 
 ## New imports for Ray Tune
 from ray import tune
@@ -175,47 +170,47 @@ def train_func(config):
 
     ### Training loop 
     # The training loop in "vanilla" Pytorch is completely replaced with a Lightning Trainer
-    # it also includes baked-in support for distributed training across GPUs
-    # we set devices="auto" and let it figure out by itself how many GPUs are available, and how to use them
+    # Tune will launch one trial per resource bundle we request
+    # so inside each trial we use a single device and report validation metrics back to Tune
 
     lightning_food11_model = LightningFood11Model()
         
-    trainer = Trainer(
-        max_epochs=config["total_epochs"],
-        devices="auto",
-        accelerator="auto",
-        strategy=ray.train.lightning.RayDDPStrategy(),
-        plugins=[ray.train.lightning.RayLightningEnvironment()],
-        callbacks=[early_stopping_callback, backbone_finetuning_callback, ray.train.lightning.RayTrainReportCallback()]
+    tune_report_callback = TuneReportCheckpointCallback(
+        metrics={
+            "ptl/val_accuracy": "val_accuracy",
+            "ptl/val_loss": "val_loss",
+        },
+        filename="checkpoint",
+        on="validation_end",
     )
 
-    # Another Ray thing - prepare trainer for distributed training
-    trainer = ray.train.lightning.prepare_trainer(trainer)
+    trainer = Trainer(
+        max_epochs=config["total_epochs"],
+        devices=1,
+        accelerator="auto",
+        callbacks=[early_stopping_callback, backbone_finetuning_callback, tune_report_callback]
+    )
 
     trainer.fit(lightning_food11_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     ### Evaluate on test set
     trainer.test(lightning_food11_model, dataloaders=test_loader)
 
-### New for Ray Train
-run_config = RunConfig(storage_path="s3://ray")
-scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 0.5, "CPU": 4})
-trainer = TorchTrainer(
-    train_func, scaling_config=scaling_config, run_config=run_config
-)
-
 ### New for Ray Tune
 def tune_asha(num_samples):
     scheduler = ASHAScheduler(max_t=config["total_epochs"], grace_period=1, reduction_factor=2)
+    trainable = tune.with_resources(train_func, resources={"CPU": 4, "GPU": 0.5})
     tuner = tune.Tuner(
-        trainer,
-        param_space={"train_loop_config": config},
+        trainable=trainable,
+        param_space=config,
         tune_config=tune.TuneConfig(
-            metric="val_accuracy",
+            metric="ptl/val_accuracy",
             mode="max",
             num_samples=num_samples,
             scheduler=scheduler,
+            max_concurrent_trials=4,
         ),
+        run_config=tune.RunConfig(storage_path="s3://ray"),
     )
     return tuner.fit()
 
