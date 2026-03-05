@@ -129,7 +129,7 @@ def validate(model, dataloader, criterion, device):
             correct += predicted.eq(labels).sum().item()
 
     epoch_loss = running_loss / len(dataloader)
-    epoch_acc = correct / total
+    epoch_acc =  correct / total
 
     return epoch_loss, epoch_acc
 
@@ -206,7 +206,7 @@ for epoch in range(config["initial_epochs"]):
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
-        torch.save(food11_model, "food11.pth")
+        torch.save(food11_model.state_dict(), "food11.pth")
         print("  Validation loss improved. Model saved.")
 
 ### Un-freeze backbone/base model and keep training with smaller learning rate
@@ -246,7 +246,7 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         patience_counter = 0
-        torch.save(food11_model, "food11.pth")
+        torch.save(food11_model.state_dict(), "food11.pth")
         print("  Validation loss improved. Model saved.")
 
         # Save the best model as an artifact in MLFlow
