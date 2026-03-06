@@ -250,7 +250,7 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
         print("  Validation loss improved. Model saved.")
 
         # Save the best model as an artifact in MLFlow
-        mlflow.pytorch.log_model(food11_model, name="food11")
+        mlflow.pytorch.log_model(food11_model, name="model")
     else:
         patience_counter += 1
         print(f"  No improvement in validation loss. Patience counter: {patience_counter}")
