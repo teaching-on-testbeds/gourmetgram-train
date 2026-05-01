@@ -220,7 +220,7 @@ for epoch in range(config["initial_epochs"]):
     v_loss, v_acc = validate(food11_model, val_loader, criterion, device)
     print(f"[Initial] Epoch {epoch+1}: Train Loss={t_loss:.4f}, Val Loss={v_loss:.4f}")
     if run_ctx:
-        aiplatform.log_metrics({"train_loss": t_loss, "train_acc": t_acc, "val_loss": v_loss, "val_acc": v_acc}, step=epoch+1)
+        aiplatform.log_metrics({"epoch": epoch+1, "train_loss": t_loss, "train_acc": t_acc, "val_loss": v_loss, "val_acc": v_acc})
     if v_loss < best_val_loss:
         best_val_loss = v_loss
         torch.save(food11_model.state_dict(), "food11.pth")
@@ -237,7 +237,7 @@ for epoch in range(config["initial_epochs"], config["total_epochs"]):
     v_loss, v_acc = validate(food11_model, val_loader, criterion, device)
     print(f"[Fine-tune] Epoch {epoch+1}: Train Loss={t_loss:.4f}, Val Loss={v_loss:.4f}")
     if run_ctx:
-        aiplatform.log_metrics({"train_loss": t_loss, "train_acc": t_acc, "val_loss": v_loss, "val_acc": v_acc}, step=epoch+1)
+        aiplatform.log_metrics({"epoch": epoch+1, "train_loss": t_loss, "train_acc": t_acc, "val_loss": v_loss, "val_acc": v_acc})
     if v_loss < best_val_loss:
         best_val_loss = v_loss
         patience_counter = 0
