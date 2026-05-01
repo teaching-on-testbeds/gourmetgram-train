@@ -40,13 +40,15 @@ class GCSImageDataset(Dataset):
         self.samples = samples
         self.class_to_id = class_to_id
         self.transform = transform
+        self.client = storage.Client()
+        self.bucket = self.client.bucket(bucket_name)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         blob_name, class_name = self.samples[idx]
-        blob = storage.Client().bucket(self.bucket_name).blob(blob_name)
+        blob = self.bucket.blob(blob_name)
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(blob.download_as_bytes())).convert('RGB')
@@ -95,7 +97,8 @@ config = {
     "color_jitter_brightness": 0.2,
     "color_jitter_contrast": 0.2,
     "color_jitter_saturation": 0.2,
-    "color_jitter_hue": 0.1
+    "color_jitter_hue": 0.1,
+    "num_workers": 4
 }
 
 train_transform = transforms.Compose([
@@ -129,20 +132,35 @@ if not train_samples or not val_samples or not test_samples:
 
 train_loader = DataLoader(
     GCSImageDataset(bucket_name, train_samples, class_to_id, train_transform),
-    batch_size=config["batch_size"], shuffle=True)
+    batch_size=config["batch_size"],
+    shuffle=True,
+    num_workers=config["num_workers"],
+    pin_memory=torch.cuda.is_available(),
+    persistent_workers=(config["num_workers"] > 0),
+)
 
 val_loader = DataLoader(
     GCSImageDataset(bucket_name, val_samples, class_to_id, val_test_transform),
-    batch_size=config["batch_size"], shuffle=False)
+    batch_size=config["batch_size"],
+    shuffle=False,
+    num_workers=config["num_workers"],
+    pin_memory=torch.cuda.is_available(),
+    persistent_workers=(config["num_workers"] > 0),
+)
 
 test_loader = DataLoader(
     GCSImageDataset(bucket_name, test_samples, class_to_id, val_test_transform),
-    batch_size=config["batch_size"], shuffle=False)
+    batch_size=config["batch_size"],
+    shuffle=False,
+    num_workers=config["num_workers"],
+    pin_memory=torch.cuda.is_available(),
+    persistent_workers=(config["num_workers"] > 0),
+)
 
 def train(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss, correct, total = 0.0, 0, 0
-    for inputs, labels in dataloader:
+    for i, (inputs, labels) in enumerate(dataloader, start=1):
         inputs, labels = inputs.to(device), labels.to(device)
         optimizer.zero_grad()
         outputs = model(inputs)
@@ -153,13 +171,15 @@ def train(model, dataloader, criterion, optimizer, device):
         _, predicted = outputs.max(1)
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
+        if i % 20 == 0:
+            print(f"  train batch {i}/{len(dataloader)}", flush=True)
     return running_loss / len(dataloader), correct / total
 
 def validate(model, dataloader, criterion, device):
     model.eval()
     running_loss, correct, total = 0.0, 0, 0
     with torch.no_grad():
-        for inputs, labels in dataloader:
+        for i, (inputs, labels) in enumerate(dataloader, start=1):
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
@@ -167,6 +187,8 @@ def validate(model, dataloader, criterion, device):
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
+            if i % 20 == 0:
+                print(f"  val/test batch {i}/{len(dataloader)}", flush=True)
     return running_loss / len(dataloader), correct / total
 
 food11_model = models.mobilenet_v2(weights='MobileNet_V2_Weights.DEFAULT')
