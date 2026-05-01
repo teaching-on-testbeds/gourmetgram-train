@@ -1,5 +1,7 @@
 import os
 import argparse
+import time
+import random
 from google.cloud import storage
 from google.cloud import aiplatform
 import torch
@@ -20,7 +22,8 @@ EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
 
 if PROJECT_ID and EXPERIMENT_NAME:
     aiplatform.init(project=PROJECT_ID, location=REGION, experiment=EXPERIMENT_NAME)
-    run_ctx = aiplatform.start_run()
+    run_name = f"gourmetgram-run-{int(time.time())}-{random.randint(1000, 9999)}"
+    run_ctx = aiplatform.start_run(run=run_name)
     run_ctx.__enter__()
 else:
     run_ctx = None
