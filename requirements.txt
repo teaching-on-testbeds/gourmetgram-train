@@ -1,0 +1,6 @@
+numpy
+torch
+torchvision
+pillow
+google-cloud-storage
+google-cloud-aiplatform
