@@ -17,11 +17,10 @@ args = parser.parse_args()
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("CLOUD_ML_PROJECT_ID")
 REGION = os.getenv("REGION", os.getenv("CLOUD_ML_REGION", "us-central1"))
 EXPERIMENT_NAME = os.getenv("EXPERIMENT_NAME")
-EXPERIMENT_RUN_NAME = os.getenv("EXPERIMENT_RUN_NAME")
 
 if PROJECT_ID and EXPERIMENT_NAME:
     aiplatform.init(project=PROJECT_ID, location=REGION, experiment=EXPERIMENT_NAME)
-    run_ctx = aiplatform.start_run(run=EXPERIMENT_RUN_NAME)
+    run_ctx = aiplatform.start_run()
     run_ctx.__enter__()
 else:
     run_ctx = None

@@ -12,5 +12,3 @@ workerPoolSpecs:
       value: us-central1
     - name: EXPERIMENT_NAME
       value: gourmetgram-managed-training
-    - name: EXPERIMENT_RUN_NAME
-      value: gourmetgram-run
